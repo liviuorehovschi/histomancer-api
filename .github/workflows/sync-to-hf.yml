@@ -12,7 +12,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          lfs: false
 
       - name: Push to Hugging Face Space
         env:
