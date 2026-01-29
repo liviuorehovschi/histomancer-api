@@ -4,7 +4,7 @@ import numpy as np
 import tensorflow as tf
 from PIL import Image
 
-MODEL_DIR = Path(__file__).resolve().parent.parent / "model" / "keras_model"
+MODEL_DIR = Path(__file__).resolve().parent.parent / "model"
 _model_instance: tf.keras.Model | None = None
 _input_shape: tuple[int, int, int] | None = None
 _class_names: list[str] = ["adenocarcinoma", "squamous_cell_carcinoma", "normal"]
@@ -12,15 +12,12 @@ _class_names: list[str] = ["adenocarcinoma", "squamous_cell_carcinoma", "normal"
 
 def _find_model_path() -> str:
     if MODEL_DIR.is_dir():
-        keras_file = next(MODEL_DIR.glob("*.keras"), None)
+        keras_file = next(MODEL_DIR.glob("*.keras"), None) or next(MODEL_DIR.glob("**/*.keras"), None)
         if keras_file:
             return str(keras_file)
         saved_model = MODEL_DIR / "saved_model.pb"
         if saved_model.exists():
             return str(MODEL_DIR)
-    root_keras = MODEL_DIR.parent.parent / "model.keras"
-    if root_keras.exists():
-        return str(root_keras)
     return str(MODEL_DIR)
 
 

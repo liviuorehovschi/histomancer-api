@@ -19,5 +19,9 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_USERNAME: ${{ secrets.HF_USERNAME }}
         run: |
-          git remote add space https://${HF_USERNAME}:${HF_TOKEN}@huggingface.co/spaces/${HF_USERNAME}/histomancer-api || true
-          git push --force space main
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git remote add space https://${HF_USERNAME}:${HF_TOKEN}@huggingface.co/spaces/${HF_USERNAME}/histomancer-api 2>/dev/null || true
+          git fetch space
+          git merge space/main --no-edit --allow-unrelated-histories
+          git push space main
