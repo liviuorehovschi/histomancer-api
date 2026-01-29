@@ -1,0 +1,12 @@
+.git
+.github
+.gitignore
+__pycache__
+*.pyc
+.venv
+venv
+.env
+*.md
+!README.md
+push-to-hf.sh
+LICENSE
