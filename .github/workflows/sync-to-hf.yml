@@ -23,8 +23,4 @@ jobs:
           git config user.email "actions@github.com"
           git remote remove space 2>/dev/null || true
           git remote add space "https://${HF_USERNAME}:${HF_TOKEN}@huggingface.co/spaces/${HF_USERNAME}/histomancer-api"
-          git fetch space 2>/dev/null || true
-          if git show-ref --verify refs/remotes/space/main 2>/dev/null; then
-            git merge space/main --no-edit --allow-unrelated-histories
-          fi
-          git push space main
+          git push --force space main
