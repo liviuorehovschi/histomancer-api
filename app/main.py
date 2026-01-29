@@ -1,6 +1,10 @@
 import io
+import logging
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 from PIL import Image
 
 from app.model import load_model, get_class_names, preprocess_image, predict
@@ -17,8 +21,10 @@ def startup():
     try:
         load_model()
         _model_loaded = True
-    except Exception:
+        logger.info("Model loaded successfully")
+    except Exception as e:
         _model_loaded = False
+        logger.exception("Model failed to load: %s", e)
 
 
 @app.get("/health", response_model=HealthResponse)

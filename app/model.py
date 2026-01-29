@@ -27,15 +27,26 @@ def load_model() -> tf.keras.Model:
         return _model_instance
     path = _find_model_path()
     _model_instance = tf.keras.models.load_model(path)
-    layer = _model_instance.input
-    if hasattr(layer, "shape") and layer.shape is not None:
-        s = layer.shape
-        if len(s) == 4:
-            _input_shape = (int(s[1]), int(s[2]), int(s[3]))
+    try:
+        layer = _model_instance.input
+        if hasattr(layer, "shape") and layer.shape is not None:
+            s = layer.shape
+            if len(s) == 4:
+                _input_shape = (int(s[1]), int(s[2]), int(s[3]))
+            else:
+                _input_shape = (224, 224, 3)
         else:
             _input_shape = (224, 224, 3)
-    else:
+    except AttributeError:
         _input_shape = (224, 224, 3)
+        dummy = tf.zeros((1, 224, 224, 3))
+        _model_instance(dummy)
+        try:
+            s = _model_instance.input_shape
+            if s and len(s) == 4:
+                _input_shape = (int(s[1]), int(s[2]), int(s[3]))
+        except Exception:
+            pass
     return _model_instance
 
 
