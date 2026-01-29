@@ -1,4 +1,5 @@
 # https://huggingface.co/docs/hub/spaces-sdks-docker
+# Model lives in model/ only (no root model.keras)
 FROM python:3.10-slim
 
 RUN useradd -m -u 1000 user
