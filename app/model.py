@@ -18,6 +18,9 @@ def _find_model_path() -> str:
         saved_model = MODEL_DIR / "saved_model.pb"
         if saved_model.exists():
             return str(MODEL_DIR)
+    root_keras = MODEL_DIR.parent.parent / "model.keras"
+    if root_keras.exists():
+        return str(root_keras)
     return str(MODEL_DIR)
 
 
