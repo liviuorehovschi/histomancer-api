@@ -1,5 +1,9 @@
+import json
 import logging
 import os
+import shutil
+import tempfile
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -52,7 +56,6 @@ def _ensure_model_file() -> None:
                 )
                 if path and Path(path).exists() and not _is_lfs_pointer(Path(path)):
                     if Path(path).resolve() != MODEL_PATH.resolve():
-                        import shutil
                         MODEL_DIR.mkdir(parents=True, exist_ok=True)
                         shutil.copy2(path, MODEL_PATH)
                     return
@@ -74,15 +77,36 @@ def _find_model_path() -> str:
     return str(MODEL_PATH)
 
 
-class _InputLayerCompat(tf.keras.layers.InputLayer):
-    """Accepts config with 'batch_shape' (TF 2.15+) when loading on older TF."""
-
-    @classmethod
-    def from_config(cls, config):
-        config = dict(config)
-        if "batch_shape" in config:
-            config["batch_input_shape"] = config.pop("batch_shape")
-        return super().from_config(config)
+def _rewrite_keras_config_for_old_tf(path: str) -> str:
+    """Rewrite .keras zip: batch_shape -> batch_input_shape so TF <2.15 can load it."""
+    path = Path(path)
+    if path.suffix != ".keras" or not path.exists():
+        return str(path)
+    tmp = Path(tempfile.mktemp(suffix=".keras"))
+    try:
+        with zipfile.ZipFile(path, "r") as zin:
+            with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
+                for name in zin.namelist():
+                    data = zin.read(name)
+                    if name.endswith(".json") and b"batch_shape" in data:
+                        config = json.loads(data.decode("utf-8"))
+                        def fix(d):
+                            if isinstance(d, dict):
+                                if "batch_shape" in d:
+                                    d["batch_input_shape"] = d.pop("batch_shape")
+                                for v in d.values():
+                                    fix(v)
+                            elif isinstance(d, list):
+                                for v in d:
+                                    fix(v)
+                        fix(config)
+                        data = json.dumps(config, indent=2).encode("utf-8")
+                    zout.writestr(name, data)
+        return str(tmp)
+    except Exception:
+        if tmp.exists():
+            tmp.unlink(missing_ok=True)
+        return str(path)
 
 
 def load_model() -> tf.keras.Model:
@@ -98,15 +122,17 @@ def load_model() -> tf.keras.Model:
             f"Model at {path} is a Git LFS pointer, not the actual file. "
             "Upload the real model.keras to the Space repo (Files tab) or ensure LFS is resolved."
         )
-    custom_objects = {"InputLayer": _InputLayerCompat}
+    load_path = _rewrite_keras_config_for_old_tf(path)
     try:
-        _model_instance = tf.keras.models.load_model(
-            path, compile=False, safe_mode=False, custom_objects=custom_objects
-        )
-    except TypeError:
-        _model_instance = tf.keras.models.load_model(
-            path, compile=False, custom_objects=custom_objects
-        )
+        try:
+            _model_instance = tf.keras.models.load_model(
+                load_path, compile=False, safe_mode=False
+            )
+        except TypeError:
+            _model_instance = tf.keras.models.load_model(load_path, compile=False)
+    finally:
+        if load_path != path and Path(load_path).exists():
+            Path(load_path).unlink(missing_ok=True)
     try:
         layer = _model_instance.input
         if hasattr(layer, "shape") and layer.shape is not None:
