@@ -24,37 +24,45 @@ _class_names: list[str] = ["adenocarcinoma", "squamous_cell_carcinoma", "normal"
 def _fix_dense_18_inbound(config: dict) -> None:
     """Force dense_18 to have exactly one inbound connection (fix TF load bug)."""
     if isinstance(config, dict):
-        # Graph topology: config.config.nodes[i] is the node for layers[i]
-        # dense_18 is at layers[4], so nodes[4] is its node (list of inbound connections)
+        # Keras 3: graph might be in config.config.nodes OR in layers[i].inbound_nodes OR in build_config
         if "config" in config and isinstance(config["config"], dict):
             cfg = config["config"]
-            if "layers" in cfg and "nodes" in cfg:
+            if "layers" in cfg and isinstance(cfg["layers"], list):
                 layers = cfg["layers"]
-                nodes = cfg["nodes"]
-                if isinstance(layers, list) and isinstance(nodes, list):
-                        # Find dense_18's layer index
-                        for layer_idx, layer in enumerate(layers):
-                            if isinstance(layer, dict) and layer.get("name") == "dense_18":
-                                # nodes[layer_idx] is dense_18's node (list of inbound connections)
-                                if layer_idx < len(nodes):
-                                    node = nodes[layer_idx]
-                                    logger.info("Found dense_18 at layers[%d], node has %d connections", layer_idx, len(node) if isinstance(node, list) else 0)
-                                    if isinstance(node, list) and len(node) > 1:
-                                        # Keep only first inbound connection
-                                        nodes[layer_idx] = [node[0]]
-                                        logger.info("Patched dense_18 node[%d] from %d to 1 inbound connection", layer_idx, len(node))
-                                else:
-                                    logger.warning("dense_18 at layers[%d] but nodes has only %d elements", layer_idx, len(nodes))
-                                break
-                        else:
-                            logger.warning("dense_18 not found in layers list")
-        # Also check layer-level inbound_nodes (older format)
+                # Check layer-level inbound_nodes (Keras 3 style)
+                for layer_idx, layer in enumerate(layers):
+                    if isinstance(layer, dict) and layer.get("name") == "dense_18":
+                        if "inbound_nodes" in layer:
+                            nodes = layer["inbound_nodes"]
+                            if isinstance(nodes, list) and len(nodes) > 0:
+                                # nodes is [[[layer_name, node_idx, tensor_idx, kwargs], ...], ...]
+                                if isinstance(nodes[0], list) and len(nodes[0]) > 1:
+                                    layer["inbound_nodes"] = [nodes[0][:1]]
+                                    logger.info("Patched dense_18 layers[%d].inbound_nodes to single input", layer_idx)
+                        break
+                # Also check config.config.nodes (Keras 2 style)
+                if "nodes" in cfg and isinstance(cfg["nodes"], list):
+                    nodes = cfg["nodes"]
+                    for layer_idx, layer in enumerate(layers):
+                        if isinstance(layer, dict) and layer.get("name") == "dense_18":
+                            if layer_idx < len(nodes):
+                                node = nodes[layer_idx]
+                                if isinstance(node, list) and len(node) > 1:
+                                    nodes[layer_idx] = [node[0]]
+                                    logger.info("Patched dense_18 nodes[%d] to single inbound", layer_idx)
+                            break
+        # Also check build_config for input/output layers
+        if "build_config" in config and isinstance(config["build_config"], dict):
+            bc = config["build_config"]
+            # If build_config has input_layers/output_layers, we might need to fix those
+            # But typically the issue is in inbound_nodes, not build_config
+        # Recursive check for nested structures
         if config.get("name") == "dense_18" and "inbound_nodes" in config:
             nodes = config["inbound_nodes"]
             if isinstance(nodes, list) and nodes:
                 if isinstance(nodes[0], list) and len(nodes[0]) > 1:
                     config["inbound_nodes"] = [nodes[0][:1]] if nodes[0] else []
-                    logger.info("Patched dense_18 inbound_nodes to single input")
+                    logger.info("Patched dense_18 inbound_nodes (direct) to single input")
         for v in config.values():
             _fix_dense_18_inbound(v)
     elif isinstance(config, list):
@@ -231,14 +239,21 @@ def _dump_keras_config_for_dense_18(path: Path) -> dict | None:
                                 out["dense_18_layer_keys"] = list(layer.keys())
                                 out["dense_18_inbound_nodes_raw"] = layer.get("inbound_nodes")
                                 break
-                    # Graph topology: nodes[i] is the node for layers[i]
+                    # Check build_config for graph topology (Keras 3 might store it there)
+                    if "build_config" in config and isinstance(config["build_config"], dict):
+                        bc = config["build_config"]
+                        out["build_config_keys"] = list(bc.keys())
+                        if "input_layers" in bc:
+                            out["build_config_input_layers"] = bc["input_layers"]
+                        if "output_layers" in bc:
+                            out["build_config_output_layers"] = bc["output_layers"]
+                    # Graph topology: nodes[i] is the node for layers[i] (Keras 2 style)
                     if "nodes" in cfg:
                         nodes = cfg["nodes"]
                         out["nodes_exists"] = True
                         out["nodes_type"] = type(nodes).__name__
                         if isinstance(nodes, list):
                             out["nodes_count"] = len(nodes)
-                            # Find dense_18's layer index, then show nodes[layer_index]
                             for layer_idx, layer in enumerate(cfg.get("layers", [])):
                                 if isinstance(layer, dict) and layer.get("name") == "dense_18":
                                     out["dense_18_layer_index"] = layer_idx
@@ -246,13 +261,19 @@ def _dump_keras_config_for_dense_18(path: Path) -> dict | None:
                                         out["dense_18_node_index"] = layer_idx
                                         out["dense_18_node_raw"] = nodes[layer_idx]
                                         out["dense_18_node_length"] = len(nodes[layer_idx]) if isinstance(nodes[layer_idx], list) else None
-                                    else:
-                                        out["dense_18_node_error"] = f"layer_idx {layer_idx} >= nodes length {len(nodes)}"
                                     break
-                        else:
-                            out["nodes_not_list"] = str(nodes)[:200]
                     else:
                         out["nodes_exists"] = False
+                        # In Keras 3, connections might be in layers themselves or build_config
+                        # Check if layers have inbound_nodes at the layer level (not in .config)
+                        if "layers" in cfg:
+                            for i, layer in enumerate(cfg["layers"]):
+                                if isinstance(layer, dict) and layer.get("name") == "dense_18":
+                                    # Check top-level keys of layer (not layer.config)
+                                    out["dense_18_layer_top_keys"] = [k for k in layer.keys() if k != "config"]
+                                    if "inbound_nodes" in layer:
+                                        out["dense_18_inbound_nodes_at_layer"] = layer["inbound_nodes"]
+                                    break
                 return out
     except Exception as e:
         return {"error": str(e)}
