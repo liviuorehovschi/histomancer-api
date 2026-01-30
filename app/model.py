@@ -30,15 +30,29 @@ def _is_lfs_pointer(path: Path) -> bool:
         return False
 
 
+def _verify_keras_file(path: Path) -> bool:
+    """Check if file is a valid .keras (zip) file."""
+    if not path.exists():
+        return False
+    try:
+        with zipfile.ZipFile(path, "r") as z:
+            z.testzip()
+            return "config.json" in z.namelist()
+    except Exception:
+        return False
+
+
 def _ensure_model_file() -> None:
-    if MODEL_PATH.exists() and not _is_lfs_pointer(MODEL_PATH):
+    # If file exists and is valid, keep it
+    if MODEL_PATH.exists() and not _is_lfs_pointer(MODEL_PATH) and _verify_keras_file(MODEL_PATH):
         return
+    # File missing, corrupted, or LFS pointer - download fresh
     space_id = os.environ.get("SPACE_ID", "liviuorehovschi/histomancer-api")
     token = os.environ.get("HF_TOKEN")
     try:
         from huggingface_hub import hf_hub_download
 
-        logger.info("Model missing or LFS pointer; downloading from Space repo %s", space_id)
+        logger.info("Model missing/corrupted/LFS; downloading from Space repo %s", space_id)
         MODEL_DIR.mkdir(parents=True, exist_ok=True)
         for filename in ("model/model.keras", "model.keras"):
             try:
@@ -50,10 +64,14 @@ def _ensure_model_file() -> None:
                     token=token,
                 )
                 if path and Path(path).exists() and not _is_lfs_pointer(Path(path)):
-                    if Path(path).resolve() != MODEL_PATH.resolve():
-                        MODEL_DIR.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(path, MODEL_PATH)
-                    return
+                    if _verify_keras_file(Path(path)):
+                        if Path(path).resolve() != MODEL_PATH.resolve():
+                            MODEL_DIR.mkdir(parents=True, exist_ok=True)
+                            shutil.copy2(path, MODEL_PATH)
+                        logger.info("Downloaded valid model file")
+                        return
+                    else:
+                        logger.warning("Downloaded file is not a valid .keras file")
             except Exception as e:
                 logger.debug("Download %s failed: %s", filename, e)
                 continue
@@ -86,16 +104,19 @@ def load_model() -> tf.keras.Model:
             f"Model at {path} is a Git LFS pointer. Upload the real model.keras to the Space repo."
         )
     # Verify it's a valid zip file (.keras is a zip)
-    try:
-        import zipfile
-        with zipfile.ZipFile(path, "r") as z:
-            namelist = z.namelist()
-            logger.info("Model file is valid zip with %d entries", len(namelist))
-            if "config.json" not in namelist:
-                raise RuntimeError(f"Model file missing config.json. Found: {namelist[:10]}")
-    except zipfile.BadZipFile:
-        raise RuntimeError(f"Model file at {path} is not a valid zip/.keras file (corrupted or incomplete)")
-    _model_instance = tf.keras.models.load_model(path, compile=False)
+    if not _verify_keras_file(path_obj):
+        # Try re-downloading
+        logger.warning("Model file appears corrupted, attempting re-download")
+        if MODEL_PATH.exists():
+            MODEL_PATH.unlink()
+        _ensure_model_file()
+        path_obj = Path(_find_model_path())
+        if not _verify_keras_file(path_obj):
+            raise RuntimeError(
+                f"Model file at {path} is corrupted or not a valid .keras file. "
+                "Please re-upload model.keras to the Space repo."
+            )
+    _model_instance = tf.keras.models.load_model(str(path_obj), compile=False)
     try:
         layer = _model_instance.input
         if hasattr(layer, "shape") and layer.shape is not None:
