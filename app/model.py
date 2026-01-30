@@ -222,7 +222,9 @@ def _dump_keras_config_for_dense_18(path: Path) -> dict | None:
                 out["dense_18_occurrences"] = found[:5]
                 if isinstance(config, dict) and "config" in config and isinstance(config["config"], dict):
                     cfg = config["config"]
+                    out["config_config_keys"] = list(cfg.keys())
                     if "layers" in cfg and isinstance(cfg["layers"], list):
+                        out["layers_count"] = len(cfg["layers"])
                         for i, layer in enumerate(cfg["layers"]):
                             if isinstance(layer, dict) and layer.get("name") == "dense_18":
                                 out["dense_18_in_layers_index"] = i
@@ -230,17 +232,27 @@ def _dump_keras_config_for_dense_18(path: Path) -> dict | None:
                                 out["dense_18_inbound_nodes_raw"] = layer.get("inbound_nodes")
                                 break
                     # Graph topology: nodes[i] is the node for layers[i]
-                    if "nodes" in cfg and isinstance(cfg["nodes"], list):
+                    if "nodes" in cfg:
                         nodes = cfg["nodes"]
-                        # Find dense_18's layer index, then show nodes[layer_index]
-                        for layer_idx, layer in enumerate(cfg.get("layers", [])):
-                            if isinstance(layer, dict) and layer.get("name") == "dense_18":
-                                if layer_idx < len(nodes):
+                        out["nodes_exists"] = True
+                        out["nodes_type"] = type(nodes).__name__
+                        if isinstance(nodes, list):
+                            out["nodes_count"] = len(nodes)
+                            # Find dense_18's layer index, then show nodes[layer_index]
+                            for layer_idx, layer in enumerate(cfg.get("layers", [])):
+                                if isinstance(layer, dict) and layer.get("name") == "dense_18":
                                     out["dense_18_layer_index"] = layer_idx
-                                    out["dense_18_node_index"] = layer_idx
-                                    out["dense_18_node_raw"] = nodes[layer_idx]
-                                    out["dense_18_node_length"] = len(nodes[layer_idx]) if isinstance(nodes[layer_idx], list) else None
-                                break
+                                    if layer_idx < len(nodes):
+                                        out["dense_18_node_index"] = layer_idx
+                                        out["dense_18_node_raw"] = nodes[layer_idx]
+                                        out["dense_18_node_length"] = len(nodes[layer_idx]) if isinstance(nodes[layer_idx], list) else None
+                                    else:
+                                        out["dense_18_node_error"] = f"layer_idx {layer_idx} >= nodes length {len(nodes)}"
+                                    break
+                        else:
+                            out["nodes_not_list"] = str(nodes)[:200]
+                    else:
+                        out["nodes_exists"] = False
                 return out
     except Exception as e:
         return {"error": str(e)}
