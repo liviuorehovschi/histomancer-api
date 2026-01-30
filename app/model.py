@@ -77,8 +77,31 @@ def _find_model_path() -> str:
     return str(MODEL_PATH)
 
 
+def _parse_shape_string(s: str):
+    """Parse Keras 3 shape string '(None, 224, 224, 3)' -> [None, 224, 224, 3] for old TF."""
+    s = s.strip()
+    if not (s.startswith("(") and s.endswith(")")):
+        return None
+    inner = s[1:-1].strip()
+    if not inner:
+        return []
+    out = []
+    for part in inner.split(","):
+        part = part.strip()
+        if part == "None":
+            out.append(None)
+        elif part == "-1":
+            out.append(-1)
+        else:
+            try:
+                out.append(int(part))
+            except ValueError:
+                return None
+    return out
+
+
 def _rewrite_keras_config_for_old_tf(path: str) -> str:
-    """Rewrite .keras zip: batch_shape -> batch_input_shape so TF <2.15 can load it."""
+    """Rewrite .keras zip so TF <2.15 can load (batch_shape, dtype, shape strings)."""
     path = Path(path)
     if path.suffix != ".keras" or not path.exists():
         return str(path)
@@ -88,21 +111,27 @@ def _rewrite_keras_config_for_old_tf(path: str) -> str:
             with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
                 for name in zin.namelist():
                     data = zin.read(name)
-                    if name.endswith(".json") and (b"batch_shape" in data or b"DTypePolicy" in data):
+                    if name.endswith(".json") and (
+                        b"batch_shape" in data or b"DTypePolicy" in data or b"(" in data
+                    ):
                         config = json.loads(data.decode("utf-8"))
                         def fix(d):
                             if isinstance(d, dict):
                                 if "batch_shape" in d:
                                     d["batch_input_shape"] = d.pop("batch_shape")
-                                # Keras 3 dtype: {class_name: DTypePolicy, config: {name: float32}} -> "float32"
                                 if "dtype" in d and isinstance(d["dtype"], dict):
                                     dtype_cfg = d["dtype"]
                                     if dtype_cfg.get("class_name") == "DTypePolicy":
                                         inner = dtype_cfg.get("config") or {}
                                         d["dtype"] = inner.get("name", "float32")
-                                    elif "config" in dtype_cfg and isinstance(dtype_cfg["config"], dict):
+                                    elif "config" in dtype_cfg and isinstance(dtype_cfg.get("config"), dict):
                                         d["dtype"] = dtype_cfg["config"].get("name", "float32")
-                                for v in d.values():
+                                for k, v in list(d.items()):
+                                    if isinstance(v, str):
+                                        parsed = _parse_shape_string(v)
+                                        if parsed is not None:
+                                            d[k] = parsed
+                                        v = d[k]
                                     fix(v)
                             elif isinstance(d, list):
                                 for v in d:
