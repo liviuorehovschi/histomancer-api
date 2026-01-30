@@ -4,10 +4,10 @@ import numpy as np
 import tensorflow as tf
 from PIL import Image
 
-# Repo root: same whether running locally or on HF Space
+# Repo root: same locally and on HF Space. Model lives at model/model.keras.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
-# On HF you have a model folder with model.keras inside — that's the only path we use
-MODEL_PATH = _REPO_ROOT / "model" / "model.keras"
+MODEL_DIR = _REPO_ROOT / "model"
+MODEL_PATH = MODEL_DIR / "model.keras"
 
 _model_instance: tf.keras.Model | None = None
 _input_shape: tuple[int, int, int] | None = None
@@ -17,10 +17,8 @@ _class_names: list[str] = ["adenocarcinoma", "squamous_cell_carcinoma", "normal"
 def _find_model_path() -> str:
     if MODEL_PATH.exists():
         return str(MODEL_PATH)
-    # Fallback for local dev if you use a different layout
-    model_dir = _REPO_ROOT / "model"
-    if model_dir.is_dir():
-        keras_file = next(model_dir.glob("*.keras"), None) or next(model_dir.glob("**/*.keras"), None)
+    if MODEL_DIR.is_dir():
+        keras_file = next(MODEL_DIR.glob("*.keras"), None) or next(MODEL_DIR.glob("**/*.keras"), None)
         if keras_file:
             return str(keras_file)
     return str(MODEL_PATH)
