@@ -32,17 +32,22 @@ def _fix_dense_18_inbound(config: dict) -> None:
                 layers = cfg["layers"]
                 nodes = cfg["nodes"]
                 if isinstance(layers, list) and isinstance(nodes, list):
-                    # Find dense_18's layer index
-                    for layer_idx, layer in enumerate(layers):
-                        if isinstance(layer, dict) and layer.get("name") == "dense_18":
-                            # nodes[layer_idx] is dense_18's node (list of inbound connections)
-                            if layer_idx < len(nodes):
-                                node = nodes[layer_idx]
-                                if isinstance(node, list) and len(node) > 1:
-                                    # Keep only first inbound connection
-                                    nodes[layer_idx] = [node[0]]
-                                    logger.info("Patched dense_18 node[%d] to single inbound connection", layer_idx)
-                            break
+                        # Find dense_18's layer index
+                        for layer_idx, layer in enumerate(layers):
+                            if isinstance(layer, dict) and layer.get("name") == "dense_18":
+                                # nodes[layer_idx] is dense_18's node (list of inbound connections)
+                                if layer_idx < len(nodes):
+                                    node = nodes[layer_idx]
+                                    logger.info("Found dense_18 at layers[%d], node has %d connections", layer_idx, len(node) if isinstance(node, list) else 0)
+                                    if isinstance(node, list) and len(node) > 1:
+                                        # Keep only first inbound connection
+                                        nodes[layer_idx] = [node[0]]
+                                        logger.info("Patched dense_18 node[%d] from %d to 1 inbound connection", layer_idx, len(node))
+                                else:
+                                    logger.warning("dense_18 at layers[%d] but nodes has only %d elements", layer_idx, len(nodes))
+                                break
+                        else:
+                            logger.warning("dense_18 not found in layers list")
         # Also check layer-level inbound_nodes (older format)
         if config.get("name") == "dense_18" and "inbound_nodes" in config:
             nodes = config["inbound_nodes"]
@@ -69,9 +74,11 @@ def _rewrite_keras_dense_18(path: str) -> str:
                 for name in zin.namelist():
                     data = zin.read(name)
                     if name.endswith(".json") and b"dense_18" in data:
+                        logger.info("Patching config file: %s", name)
                         config = json.loads(data.decode("utf-8"))
                         _fix_dense_18_inbound(config)
                         data = json.dumps(config, indent=2).encode("utf-8")
+                        logger.info("Patched config written back to %s", name)
                     zout.writestr(name, data)
         return str(tmp)
     except Exception as e:
@@ -222,16 +229,18 @@ def _dump_keras_config_for_dense_18(path: Path) -> dict | None:
                                 out["dense_18_layer_keys"] = list(layer.keys())
                                 out["dense_18_inbound_nodes_raw"] = layer.get("inbound_nodes")
                                 break
-                    # Graph topology is in nodes - find dense_18's node
+                    # Graph topology: nodes[i] is the node for layers[i]
                     if "nodes" in cfg and isinstance(cfg["nodes"], list):
-                        for i, node in enumerate(cfg["nodes"]):
-                            if isinstance(node, list) and len(node) > 0:
-                                # node is [[layer_name, node_idx, tensor_idx, kwargs], ...]
-                                for conn in node:
-                                    if isinstance(conn, list) and len(conn) > 0 and conn[0] == "dense_18":
-                                        out["dense_18_node_index"] = i
-                                        out["dense_18_node_raw"] = node
-                                        break
+                        nodes = cfg["nodes"]
+                        # Find dense_18's layer index, then show nodes[layer_index]
+                        for layer_idx, layer in enumerate(cfg.get("layers", [])):
+                            if isinstance(layer, dict) and layer.get("name") == "dense_18":
+                                if layer_idx < len(nodes):
+                                    out["dense_18_layer_index"] = layer_idx
+                                    out["dense_18_node_index"] = layer_idx
+                                    out["dense_18_node_raw"] = nodes[layer_idx]
+                                    out["dense_18_node_length"] = len(nodes[layer_idx]) if isinstance(nodes[layer_idx], list) else None
+                                break
                 return out
     except Exception as e:
         return {"error": str(e)}
