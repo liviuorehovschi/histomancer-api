@@ -1,8 +1,12 @@
+import logging
+import os
 from pathlib import Path
 
 import numpy as np
 import tensorflow as tf
 from PIL import Image
+
+logger = logging.getLogger(__name__)
 
 # Repo root: same locally and on HF Space. Model lives at model/model.keras.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -14,13 +18,59 @@ _input_shape: tuple[int, int, int] | None = None
 _class_names: list[str] = ["adenocarcinoma", "squamous_cell_carcinoma", "normal"]
 
 
+def _is_lfs_pointer(path: Path) -> bool:
+    """True if the file is a Git LFS pointer (not the actual model)."""
+    if not path.exists() or path.stat().st_size < 200:
+        return True
+    try:
+        with open(path, "rb") as f:
+            first = f.read(100).decode("utf-8", errors="ignore")
+        return first.strip().startswith("version https://git-lfs.github.com")
+    except Exception:
+        return False
+
+
+def _ensure_model_file() -> None:
+    """If model is missing or an LFS pointer, download it from this Space repo (HF serves the real file)."""
+    if MODEL_PATH.exists() and not _is_lfs_pointer(MODEL_PATH):
+        return
+    space_id = os.environ.get("SPACE_ID", "liviuorehovschi/histomancer-api")
+    token = os.environ.get("HF_TOKEN")
+    try:
+        from huggingface_hub import hf_hub_download
+
+        logger.info("Model missing or LFS pointer; downloading from Space repo %s", space_id)
+        MODEL_DIR.mkdir(parents=True, exist_ok=True)
+        for filename in ("model/model.keras", "model.keras"):
+            try:
+                path = hf_hub_download(
+                    repo_id=space_id,
+                    filename=filename,
+                    local_dir=str(_REPO_ROOT),
+                    local_dir_use_symlinks=False,
+                    token=token,
+                )
+                if path and Path(path).exists() and not _is_lfs_pointer(Path(path)):
+                    if Path(path).resolve() != MODEL_PATH.resolve():
+                        import shutil
+                        MODEL_DIR.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(path, MODEL_PATH)
+                    return
+            except Exception as e:
+                logger.debug("Download %s failed: %s", filename, e)
+                continue
+    except Exception as e:
+        logger.warning("Could not download model from Hub: %s", e)
+
+
 def _find_model_path() -> str:
-    if MODEL_PATH.exists():
+    _ensure_model_file()
+    if MODEL_PATH.exists() and not _is_lfs_pointer(MODEL_PATH):
         return str(MODEL_PATH)
     if MODEL_DIR.is_dir():
-        keras_file = next(MODEL_DIR.glob("*.keras"), None) or next(MODEL_DIR.glob("**/*.keras"), None)
-        if keras_file:
-            return str(keras_file)
+        for p in list(MODEL_DIR.glob("*.keras")) or list(MODEL_DIR.glob("**/*.keras")):
+            if p.exists() and not _is_lfs_pointer(p):
+                return str(p)
     return str(MODEL_PATH)
 
 
@@ -29,6 +79,14 @@ def load_model() -> tf.keras.Model:
     if _model_instance is not None:
         return _model_instance
     path = _find_model_path()
+    logger.info("Loading model from %s (exists=%s)", path, Path(path).exists())
+    if not Path(path).exists():
+        raise FileNotFoundError(f"Model not found at {path}")
+    if _is_lfs_pointer(Path(path)):
+        raise RuntimeError(
+            f"Model at {path} is a Git LFS pointer, not the actual file. "
+            "Upload the real model.keras to the Space repo (Files tab) or ensure LFS is resolved."
+        )
     _model_instance = tf.keras.models.load_model(path)
     try:
         layer = _model_instance.input
