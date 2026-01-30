@@ -19,39 +19,46 @@ _class_names: list[str] = ["adenocarcinoma", "squamous_cell_carcinoma", "normal"
 
 
 def ensure_model_file() -> Path:
+    valid = False
     if MODEL_PATH.exists() and MODEL_PATH.stat().st_size > 1024 * 1024:
         try:
             with zipfile.ZipFile(MODEL_PATH, "r") as z:
                 z.testzip()
-            return MODEL_PATH
+                if "config.json" in z.namelist():
+                    valid = True
         except Exception:
-            pass
-    from huggingface_hub import hf_hub_download
-    space_id = os.environ.get("SPACE_ID", "liviuorehovschi/histomancer-api")
-    token = os.environ.get("HF_TOKEN")
-    MODEL_DIR.mkdir(parents=True, exist_ok=True)
-    if MODEL_PATH.exists():
-        MODEL_PATH.unlink()
-    downloaded_path = hf_hub_download(
-        repo_id=space_id,
-        filename="model/model.keras",
-        repo_type="space",
-        local_dir=str(_REPO_ROOT),
-        local_dir_use_symlinks=False,
-        token=token,
-        force_download=True,
-    )
-    downloaded = Path(downloaded_path)
-    if downloaded.stat().st_size < 1024 * 1024:
-        raise RuntimeError(f"Downloaded file is only {downloaded.stat().st_size} bytes (expected >1MB). Xet pointer not resolved.")
-    try:
-        with zipfile.ZipFile(downloaded, "r") as z:
-            z.testzip()
-    except Exception as e:
-        raise RuntimeError(f"Downloaded file is not a valid zip/.keras file: {e}")
-    if downloaded.resolve() != MODEL_PATH.resolve():
-        import shutil
-        shutil.copy2(downloaded, MODEL_PATH)
+            valid = False
+    if not valid:
+        from huggingface_hub import hf_hub_download
+        space_id = os.environ.get("SPACE_ID", "liviuorehovschi/histomancer-api")
+        token = os.environ.get("HF_TOKEN")
+        MODEL_DIR.mkdir(parents=True, exist_ok=True)
+        if MODEL_PATH.exists():
+            MODEL_PATH.unlink()
+        logger.info("Downloading model from %s", space_id)
+        downloaded_path = hf_hub_download(
+            repo_id=space_id,
+            filename="model/model.keras",
+            repo_type="space",
+            local_dir=str(_REPO_ROOT),
+            local_dir_use_symlinks=False,
+            token=token,
+            force_download=True,
+        )
+        downloaded = Path(downloaded_path)
+        logger.info("Downloaded to %s, size=%d", downloaded, downloaded.stat().st_size)
+        if downloaded.stat().st_size < 1024 * 1024:
+            raise RuntimeError(f"Downloaded file is only {downloaded.stat().st_size} bytes (expected >1MB). Xet pointer not resolved.")
+        try:
+            with zipfile.ZipFile(downloaded, "r") as z:
+                z.testzip()
+                if "config.json" not in z.namelist():
+                    raise RuntimeError("Downloaded file missing config.json")
+        except Exception as e:
+            raise RuntimeError(f"Downloaded file is not a valid zip/.keras file: {e}")
+        if downloaded.resolve() != MODEL_PATH.resolve():
+            import shutil
+            shutil.copy2(downloaded, MODEL_PATH)
     return MODEL_PATH
 
 
@@ -60,6 +67,7 @@ def load_model() -> tf.keras.Model:
     if _model_instance is not None:
         return _model_instance
     path = ensure_model_file()
+    logger.info("Loading model from %s", path)
     _model_instance = tf.keras.models.load_model(str(path), compile=False)
     try:
         layer = _model_instance.input
@@ -107,8 +115,10 @@ def get_model_diagnostics() -> dict:
         out["model_path_size"] = p.stat().st_size
         try:
             with zipfile.ZipFile(p, "r") as z:
+                z.testzip()
                 out["is_valid_zip"] = True
                 out["zip_entries"] = len(z.namelist())
+                out["has_config_json"] = "config.json" in z.namelist()
         except Exception as e:
             out["is_valid_zip"] = False
             out["zip_error"] = str(e)
