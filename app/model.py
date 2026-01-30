@@ -170,6 +170,45 @@ def get_class_names() -> list[str]:
     return _class_names
 
 
+def _dump_keras_config_for_dense_18(path: Path) -> dict | None:
+    """Read .keras zip and return config structure so we can see how dense_18 is wired."""
+    if not path.exists() or path.suffix != ".keras" or _is_lfs_pointer(path):
+        return None
+    try:
+        with zipfile.ZipFile(path, "r") as z:
+            for name in z.namelist():
+                if not name.endswith(".json") or "dense_18" not in z.read(name).decode("utf-8", errors="ignore"):
+                    continue
+                config = json.loads(z.read(name).decode("utf-8"))
+                out = {"config_file": name, "top_level_keys": list(config.keys()) if isinstance(config, dict) else []}
+                found = []
+
+                def collect(d, path_prefix=""):
+                    if isinstance(d, dict):
+                        if d.get("name") == "dense_18":
+                            found.append({"path": path_prefix, "keys": list(d.keys()), "inbound_nodes": d.get("inbound_nodes"), "full_layer": d})
+                        for k, v in d.items():
+                            collect(v, f"{path_prefix}.{k}")
+                    elif isinstance(d, list):
+                        for i, v in enumerate(d):
+                            collect(v, f"{path_prefix}[{i}]")
+                collect(config)
+                out["dense_18_occurrences"] = found[:5]
+                if isinstance(config, dict) and "config" in config and isinstance(config["config"], dict):
+                    cfg = config["config"]
+                    if "layers" in cfg and isinstance(cfg["layers"], list):
+                        for i, layer in enumerate(cfg["layers"]):
+                            if isinstance(layer, dict) and layer.get("name") == "dense_18":
+                                out["dense_18_in_layers_index"] = i
+                                out["dense_18_layer_keys"] = list(layer.keys())
+                                out["dense_18_inbound_nodes_raw"] = layer.get("inbound_nodes")
+                                break
+                return out
+    except Exception as e:
+        return {"error": str(e)}
+    return None
+
+
 def get_model_diagnostics() -> dict:
     p = MODEL_PATH
     out = {
@@ -186,6 +225,9 @@ def get_model_diagnostics() -> dict:
         out["model_dir_listing"] = [x.name for x in MODEL_DIR.iterdir()]
     else:
         out["model_dir_listing"] = []
+    cfg = _dump_keras_config_for_dense_18(p)
+    if cfg:
+        out["keras_config_dense_18"] = cfg
     return out
 
 
