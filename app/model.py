@@ -70,30 +70,18 @@ def _fix_dense_18_inbound(config: dict) -> None:
             _fix_dense_18_inbound(v)
 
 
-def _rewrite_keras_dense_18(path: str) -> str:
-    """Rewrite .keras zip so dense_18 has one inbound only; return path to use for load."""
-    path = Path(path)
-    if path.suffix != ".keras" or not path.exists():
-        return str(path)
-    tmp = Path(tempfile.mktemp(suffix=".keras"))
-    try:
-        with zipfile.ZipFile(path, "r") as zin:
-            with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
-                for name in zin.namelist():
-                    data = zin.read(name)
-                    if name.endswith(".json") and b"dense_18" in data:
-                        logger.info("Patching config file: %s", name)
-                        config = json.loads(data.decode("utf-8"))
-                        _fix_dense_18_inbound(config)
-                        data = json.dumps(config, indent=2).encode("utf-8")
-                        logger.info("Patched config written back to %s", name)
-                    zout.writestr(name, data)
-        return str(tmp)
-    except Exception as e:
-        logger.warning("dense_18 patch failed: %s", e)
-        if tmp.exists():
-            tmp.unlink(missing_ok=True)
-        return str(path)
+class DenseAcceptTwoInputs(tf.keras.layers.Dense):
+    """Dense layer that accepts 2 inputs but uses only the first (fixes TF load bug)."""
+    
+    def call(self, inputs, **kwargs):
+        if isinstance(inputs, (list, tuple)) and len(inputs) > 1:
+            inputs = inputs[0]
+        return super().call(inputs, **kwargs)
+    
+    def compute_output_shape(self, input_shape):
+        if isinstance(input_shape, (list, tuple)) and len(input_shape) > 1:
+            input_shape = input_shape[0]
+        return super().compute_output_shape(input_shape)
 
 
 def _is_lfs_pointer(path: Path) -> bool:
@@ -161,16 +149,12 @@ def load_model() -> tf.keras.Model:
         raise RuntimeError(
             f"Model at {path} is a Git LFS pointer. Upload the real model.keras to the Space repo."
         )
-    # Patch dense_18 to single inbound (fix TF load bug: "expects 1 input but received 2").
-    load_path = _rewrite_keras_dense_18(path)
+    # Use custom Dense layer that accepts 2 inputs but uses first (fixes TF load bug).
+    custom_objects = {"Dense": DenseAcceptTwoInputs}
     try:
-        try:
-            _model_instance = tf.keras.models.load_model(load_path, compile=False, safe_mode=False)
-        except TypeError:
-            _model_instance = tf.keras.models.load_model(load_path, compile=False)
-    finally:
-        if load_path != path and Path(load_path).exists():
-            Path(load_path).unlink(missing_ok=True)
+        _model_instance = tf.keras.models.load_model(path, compile=False, safe_mode=False, custom_objects=custom_objects)
+    except TypeError:
+        _model_instance = tf.keras.models.load_model(path, compile=False, custom_objects=custom_objects)
     try:
         layer = _model_instance.input
         if hasattr(layer, "shape") and layer.shape is not None:
