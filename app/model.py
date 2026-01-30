@@ -1,9 +1,6 @@
-import json
 import logging
 import os
 import shutil
-import tempfile
-import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -19,78 +16,6 @@ MODEL_PATH = MODEL_DIR / "model.keras"
 _model_instance: tf.keras.Model | None = None
 _input_shape: tuple[int, int, int] | None = None
 _class_names: list[str] = ["adenocarcinoma", "squamous_cell_carcinoma", "normal"]
-
-
-def _fix_dense_18_inbound(config: dict) -> None:
-    """Force dense_18 to have exactly one inbound connection (fix TF load bug)."""
-    if isinstance(config, dict):
-        # Keras 3: graph might be in config.config.nodes OR in layers[i].inbound_nodes OR in build_config
-        if "config" in config and isinstance(config["config"], dict):
-            cfg = config["config"]
-            if "layers" in cfg and isinstance(cfg["layers"], list):
-                layers = cfg["layers"]
-                # Check layer-level inbound_nodes (Keras 3 style)
-                for layer_idx, layer in enumerate(layers):
-                    if isinstance(layer, dict) and layer.get("name") == "dense_18":
-                        if "inbound_nodes" in layer:
-                            nodes = layer["inbound_nodes"]
-                            if isinstance(nodes, list) and len(nodes) > 0:
-                                # nodes is [[[layer_name, node_idx, tensor_idx, kwargs], ...], ...]
-                                if isinstance(nodes[0], list) and len(nodes[0]) > 1:
-                                    layer["inbound_nodes"] = [nodes[0][:1]]
-                                    logger.info("Patched dense_18 layers[%d].inbound_nodes to single input", layer_idx)
-                        break
-                # Also check config.config.nodes (Keras 2 style)
-                if "nodes" in cfg and isinstance(cfg["nodes"], list):
-                    nodes = cfg["nodes"]
-                    for layer_idx, layer in enumerate(layers):
-                        if isinstance(layer, dict) and layer.get("name") == "dense_18":
-                            if layer_idx < len(nodes):
-                                node = nodes[layer_idx]
-                                if isinstance(node, list) and len(node) > 1:
-                                    nodes[layer_idx] = [node[0]]
-                                    logger.info("Patched dense_18 nodes[%d] to single inbound", layer_idx)
-                            break
-        # Also check build_config for input/output layers
-        if "build_config" in config and isinstance(config["build_config"], dict):
-            bc = config["build_config"]
-            # If build_config has input_layers/output_layers, we might need to fix those
-            # But typically the issue is in inbound_nodes, not build_config
-        # Recursive check for nested structures
-        if config.get("name") == "dense_18" and "inbound_nodes" in config:
-            nodes = config["inbound_nodes"]
-            if isinstance(nodes, list) and nodes:
-                if isinstance(nodes[0], list) and len(nodes[0]) > 1:
-                    config["inbound_nodes"] = [nodes[0][:1]] if nodes[0] else []
-                    logger.info("Patched dense_18 inbound_nodes (direct) to single input")
-        for v in config.values():
-            _fix_dense_18_inbound(v)
-    elif isinstance(config, list):
-        for v in config:
-            _fix_dense_18_inbound(v)
-
-
-class DenseAcceptTwoInputs(tf.keras.layers.Dense):
-    """Dense layer that accepts 2 inputs but uses only the first (fixes TF load bug)."""
-    
-    def call(self, inputs, **kwargs):
-        if isinstance(inputs, (list, tuple)) and len(inputs) > 1:
-            inputs = inputs[0]
-        return super().call(inputs, **kwargs)
-    
-    def compute_output_shape(self, input_shape):
-        if isinstance(input_shape, (list, tuple)) and len(input_shape) > 1:
-            input_shape = input_shape[0]
-        return super().compute_output_shape(input_shape)
-    
-    @classmethod
-    def from_config(cls, config):
-        # Ensure we can deserialize from saved config
-        return cls(**config)
-
-
-# Register globally so Keras finds it when deserializing
-tf.keras.utils.get_custom_objects()["Dense"] = DenseAcceptTwoInputs
 
 
 def _is_lfs_pointer(path: Path) -> bool:
@@ -158,21 +83,7 @@ def load_model() -> tf.keras.Model:
         raise RuntimeError(
             f"Model at {path} is a Git LFS pointer. Upload the real model.keras to the Space repo."
         )
-    # Use custom Dense layer that accepts 2 inputs but uses first (fixes TF load bug).
-    # Use custom Dense layer registered globally + custom_objects (double registration for Keras 3).
-    custom_objects = {"Dense": DenseAcceptTwoInputs}
-    try:
-        _model_instance = tf.keras.models.load_model(path, compile=False, safe_mode=False, custom_objects=custom_objects)
-    except (TypeError, ValueError) as e:
-        # If safe_mode fails, try without it
-        try:
-            _model_instance = tf.keras.models.load_model(path, compile=False, custom_objects=custom_objects)
-        except ValueError as e2:
-            # If custom_objects doesn't work, the model file itself is corrupted
-            raise RuntimeError(
-                f"Model load failed: {e2}. The model file has dense_18 wired with 2 inputs. "
-                "You need to re-save the model with only 1 input to dense_18."
-            ) from e2
+    _model_instance = tf.keras.models.load_model(path, compile=False)
     try:
         layer = _model_instance.input
         if hasattr(layer, "shape") and layer.shape is not None:
@@ -298,9 +209,6 @@ def get_model_diagnostics() -> dict:
         out["model_dir_listing"] = [x.name for x in MODEL_DIR.iterdir()]
     else:
         out["model_dir_listing"] = []
-    cfg = _dump_keras_config_for_dense_18(p)
-    if cfg:
-        out["keras_config_dense_18"] = cfg
     return out
 
 

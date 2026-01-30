@@ -1,8 +1,7 @@
+tensorflow==2.10.1
 fastapi>=0.109.0
 uvicorn[standard]>=0.27.0
 python-multipart>=0.0.6
-# Must match TF version used when saving model (2.15+ for this .keras).
-tensorflow-cpu>=2.15.0
 Pillow>=10.0.0
 numpy>=1.24.0
 huggingface_hub>=0.20.0
