@@ -78,17 +78,31 @@ def _find_model_path() -> str:
 
 
 def _parse_shape_string(s: str):
-    """Parse Keras 3 shape string '(None, 224, 224, 3)' -> [None, 224, 224, 3] for old TF."""
-    s = s.strip()
-    if not (s.startswith("(") and s.endswith(")")):
+    """Parse Keras 3 shape string -> list for old TF (.as_list() expects list, not str)."""
+    if not isinstance(s, str) or not s.strip():
         return None
-    inner = s[1:-1].strip()
+    s = s.strip()
+    # TensorShape(1, 2, 3) or (None, 224, 224, 3) or [None, 224, 224, 3]
+    for prefix in ("TensorShape(", "Shape(", ""):
+        for left, right in [("(", ")"), ("[", "]")]:
+            if s.startswith(prefix + left) and s.endswith(right):
+                inner = s[len(prefix) + 1 : -1].strip()
+                break
+        else:
+            continue
+        break
+    else:
+        # "224, 224, 3" or "None 224 224 3" or similar
+        if ("," in s or " " in s) and (any(c.isdigit() for c in s) or "None" in s or "null" in s or "-1" in s):
+            inner = s.replace(" ", ",")
+        else:
+            return None
     if not inner:
         return []
     out = []
     for part in inner.split(","):
         part = part.strip()
-        if part == "None":
+        if part in ("None", "null"):
             out.append(None)
         elif part == "-1":
             out.append(-1)
@@ -97,7 +111,19 @@ def _parse_shape_string(s: str):
                 out.append(int(part))
             except ValueError:
                 return None
-    return out
+    return out if out else None
+
+
+def _shape_dict_to_list(d: dict) -> list | None:
+    """Convert Keras 3 shape dict to list. e.g. {config: {dims: [null, 224, 224, 3]}} -> list."""
+    if not isinstance(d, dict):
+        return None
+    dims = d.get("dims") or d.get("dimensions") or d.get("shape")
+    if not dims and "config" in d and isinstance(d["config"], dict):
+        dims = d["config"].get("dims") or d["config"].get("dimensions") or d["config"].get("shape")
+    if isinstance(dims, list) and dims:
+        return [None if x is None or x == "null" else (int(x) if isinstance(x, (int, float)) else x) for x in dims]
+    return None
 
 
 def _rewrite_keras_config_for_old_tf(path: str) -> str:
@@ -131,6 +157,11 @@ def _rewrite_keras_config_for_old_tf(path: str) -> str:
                                         parsed = _parse_shape_string(v)
                                         if parsed is not None:
                                             d[k] = parsed
+                                        v = d[k]
+                                    elif isinstance(v, dict):
+                                        shape_list = _shape_dict_to_list(v)
+                                        if shape_list is not None:
+                                            d[k] = shape_list
                                         v = d[k]
                                     fix(v)
                             elif isinstance(d, list):
