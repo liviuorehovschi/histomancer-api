@@ -76,13 +76,24 @@ def load_model() -> tf.keras.Model:
     if _model_instance is not None:
         return _model_instance
     path = _find_model_path()
-    logger.info("Loading model from %s (exists=%s)", path, Path(path).exists())
-    if not Path(path).exists():
+    path_obj = Path(path)
+    logger.info("Loading model from %s (exists=%s, size=%s)", path, path_obj.exists(), path_obj.stat().st_size if path_obj.exists() else 0)
+    if not path_obj.exists():
         raise FileNotFoundError(f"Model not found at {path}")
-    if _is_lfs_pointer(Path(path)):
+    if _is_lfs_pointer(path_obj):
         raise RuntimeError(
             f"Model at {path} is a Git LFS pointer. Upload the real model.keras to the Space repo."
         )
+    # Verify it's a valid zip file (.keras is a zip)
+    try:
+        import zipfile
+        with zipfile.ZipFile(path, "r") as z:
+            namelist = z.namelist()
+            logger.info("Model file is valid zip with %d entries", len(namelist))
+            if "config.json" not in namelist:
+                raise RuntimeError(f"Model file missing config.json. Found: {namelist[:10]}")
+    except zipfile.BadZipFile:
+        raise RuntimeError(f"Model file at {path} is not a valid zip/.keras file (corrupted or incomplete)")
     _model_instance = tf.keras.models.load_model(path, compile=False)
     try:
         layer = _model_instance.input
