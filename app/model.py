@@ -1,9 +1,6 @@
-import json
 import logging
 import os
 import shutil
-import tempfile
-import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -12,7 +9,6 @@ from PIL import Image
 
 logger = logging.getLogger(__name__)
 
-# Repo root: same locally and on HF Space. Model lives at model/model.keras.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 MODEL_DIR = _REPO_ROOT / "model"
 MODEL_PATH = MODEL_DIR / "model.keras"
@@ -23,7 +19,6 @@ _class_names: list[str] = ["adenocarcinoma", "squamous_cell_carcinoma", "normal"
 
 
 def _is_lfs_pointer(path: Path) -> bool:
-    """True if the file is a Git LFS pointer (not the actual model)."""
     if not path.exists() or path.stat().st_size < 200:
         return True
     try:
@@ -35,7 +30,6 @@ def _is_lfs_pointer(path: Path) -> bool:
 
 
 def _ensure_model_file() -> None:
-    """If model is missing or an LFS pointer, download it from this Space repo (HF serves the real file)."""
     if MODEL_PATH.exists() and not _is_lfs_pointer(MODEL_PATH):
         return
     space_id = os.environ.get("SPACE_ID", "liviuorehovschi/histomancer-api")
@@ -77,106 +71,6 @@ def _find_model_path() -> str:
     return str(MODEL_PATH)
 
 
-def _parse_shape_string(s: str):
-    """Parse Keras 3 shape string -> list for old TF (.as_list() expects list, not str)."""
-    if not isinstance(s, str) or not s.strip():
-        return None
-    s = s.strip()
-    # TensorShape(1, 2, 3) or (None, 224, 224, 3) or [None, 224, 224, 3]
-    for prefix in ("TensorShape(", "Shape(", ""):
-        for left, right in [("(", ")"), ("[", "]")]:
-            if s.startswith(prefix + left) and s.endswith(right):
-                inner = s[len(prefix) + 1 : -1].strip()
-                break
-        else:
-            continue
-        break
-    else:
-        # "224, 224, 3" or "None 224 224 3" or similar
-        if ("," in s or " " in s) and (any(c.isdigit() for c in s) or "None" in s or "null" in s or "-1" in s):
-            inner = s.replace(" ", ",")
-        else:
-            return None
-    if not inner:
-        return []
-    out = []
-    for part in inner.split(","):
-        part = part.strip()
-        if part in ("None", "null"):
-            out.append(None)
-        elif part == "-1":
-            out.append(-1)
-        else:
-            try:
-                out.append(int(part))
-            except ValueError:
-                return None
-    return out if out else None
-
-
-def _shape_dict_to_list(d: dict) -> list | None:
-    """Convert Keras 3 shape dict to list. e.g. {config: {dims: [null, 224, 224, 3]}} -> list."""
-    if not isinstance(d, dict):
-        return None
-    dims = d.get("dims") or d.get("dimensions") or d.get("shape")
-    if not dims and "config" in d and isinstance(d["config"], dict):
-        dims = d["config"].get("dims") or d["config"].get("dimensions") or d["config"].get("shape")
-    if isinstance(dims, list) and dims:
-        return [None if x is None or x == "null" else (int(x) if isinstance(x, (int, float)) else x) for x in dims]
-    return None
-
-
-def _rewrite_keras_config_for_old_tf(path: str) -> str:
-    """Rewrite .keras zip so TF <2.15 can load (batch_shape, dtype, shape strings)."""
-    path = Path(path)
-    if path.suffix != ".keras" or not path.exists():
-        return str(path)
-    tmp = Path(tempfile.mktemp(suffix=".keras"))
-    try:
-        with zipfile.ZipFile(path, "r") as zin:
-            with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
-                for name in zin.namelist():
-                    data = zin.read(name)
-                    if name.endswith(".json") and (
-                        b"batch_shape" in data or b"DTypePolicy" in data or b"(" in data
-                    ):
-                        config = json.loads(data.decode("utf-8"))
-                        def fix(d):
-                            if isinstance(d, dict):
-                                if "batch_shape" in d:
-                                    d["batch_input_shape"] = d.pop("batch_shape")
-                                if "dtype" in d and isinstance(d["dtype"], dict):
-                                    dtype_cfg = d["dtype"]
-                                    if dtype_cfg.get("class_name") == "DTypePolicy":
-                                        inner = dtype_cfg.get("config") or {}
-                                        d["dtype"] = inner.get("name", "float32")
-                                    elif "config" in dtype_cfg and isinstance(dtype_cfg.get("config"), dict):
-                                        d["dtype"] = dtype_cfg["config"].get("name", "float32")
-                                for k, v in list(d.items()):
-                                    if isinstance(v, str):
-                                        parsed = _parse_shape_string(v)
-                                        if parsed is not None:
-                                            d[k] = parsed
-                                        v = d[k]
-                                    elif isinstance(v, dict):
-                                        shape_list = _shape_dict_to_list(v)
-                                        if shape_list is not None:
-                                            d[k] = shape_list
-                                        v = d[k]
-                                    fix(v)
-                            elif isinstance(d, list):
-                                for v in d:
-                                    fix(v)
-                        fix(config)
-                        data = json.dumps(config, indent=2).encode("utf-8")
-                    zout.writestr(name, data)
-        return str(tmp)
-    except Exception:
-        if tmp.exists():
-            tmp.unlink(missing_ok=True)
-        return str(path)
-
-
 def load_model() -> tf.keras.Model:
     global _model_instance, _input_shape
     if _model_instance is not None:
@@ -187,20 +81,13 @@ def load_model() -> tf.keras.Model:
         raise FileNotFoundError(f"Model not found at {path}")
     if _is_lfs_pointer(Path(path)):
         raise RuntimeError(
-            f"Model at {path} is a Git LFS pointer, not the actual file. "
-            "Upload the real model.keras to the Space repo (Files tab) or ensure LFS is resolved."
+            f"Model at {path} is a Git LFS pointer. Upload the real model.keras to the Space repo."
         )
-    load_path = _rewrite_keras_config_for_old_tf(path)
+    # Load with same TF that saved it (2.15+); no config rewriting.
     try:
-        try:
-            _model_instance = tf.keras.models.load_model(
-                load_path, compile=False, safe_mode=False
-            )
-        except TypeError:
-            _model_instance = tf.keras.models.load_model(load_path, compile=False)
-    finally:
-        if load_path != path and Path(load_path).exists():
-            Path(load_path).unlink(missing_ok=True)
+        _model_instance = tf.keras.models.load_model(path, compile=False, safe_mode=False)
+    except TypeError:
+        _model_instance = tf.keras.models.load_model(path, compile=False)
     try:
         layer = _model_instance.input
         if hasattr(layer, "shape") and layer.shape is not None:
@@ -235,7 +122,6 @@ def get_class_names() -> list[str]:
 
 
 def get_model_diagnostics() -> dict:
-    """Return path, exists, size, is_lfs, and model dir listing for debugging."""
     p = MODEL_PATH
     out = {
         "model_path": str(p),
@@ -248,7 +134,7 @@ def get_model_diagnostics() -> dict:
         out["model_path_size"] = p.stat().st_size
         out["model_path_is_lfs_pointer"] = _is_lfs_pointer(p)
     if MODEL_DIR.exists():
-        out["model_dir_listing"] = [str(x.name) for x in MODEL_DIR.iterdir()]
+        out["model_dir_listing"] = [x.name for x in MODEL_DIR.iterdir()]
     else:
         out["model_dir_listing"] = []
     return out
