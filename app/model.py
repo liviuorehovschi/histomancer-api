@@ -82,6 +82,15 @@ class DenseAcceptTwoInputs(tf.keras.layers.Dense):
         if isinstance(input_shape, (list, tuple)) and len(input_shape) > 1:
             input_shape = input_shape[0]
         return super().compute_output_shape(input_shape)
+    
+    @classmethod
+    def from_config(cls, config):
+        # Ensure we can deserialize from saved config
+        return cls(**config)
+
+
+# Register globally so Keras finds it when deserializing
+tf.keras.utils.get_custom_objects()["Dense"] = DenseAcceptTwoInputs
 
 
 def _is_lfs_pointer(path: Path) -> bool:
@@ -150,11 +159,20 @@ def load_model() -> tf.keras.Model:
             f"Model at {path} is a Git LFS pointer. Upload the real model.keras to the Space repo."
         )
     # Use custom Dense layer that accepts 2 inputs but uses first (fixes TF load bug).
+    # Use custom Dense layer registered globally + custom_objects (double registration for Keras 3).
     custom_objects = {"Dense": DenseAcceptTwoInputs}
     try:
         _model_instance = tf.keras.models.load_model(path, compile=False, safe_mode=False, custom_objects=custom_objects)
-    except TypeError:
-        _model_instance = tf.keras.models.load_model(path, compile=False, custom_objects=custom_objects)
+    except (TypeError, ValueError) as e:
+        # If safe_mode fails, try without it
+        try:
+            _model_instance = tf.keras.models.load_model(path, compile=False, custom_objects=custom_objects)
+        except ValueError as e2:
+            # If custom_objects doesn't work, the model file itself is corrupted
+            raise RuntimeError(
+                f"Model load failed: {e2}. The model file has dense_18 wired with 2 inputs. "
+                "You need to re-save the model with only 1 input to dense_18."
+            ) from e2
     try:
         layer = _model_instance.input
         if hasattr(layer, "shape") and layer.shape is not None:
