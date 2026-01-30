@@ -1,5 +1,6 @@
 import logging
 import os
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -19,7 +20,12 @@ _class_names: list[str] = ["adenocarcinoma", "squamous_cell_carcinoma", "normal"
 
 def ensure_model_file() -> Path:
     if MODEL_PATH.exists() and MODEL_PATH.stat().st_size > 1024 * 1024:
-        return MODEL_PATH
+        try:
+            with zipfile.ZipFile(MODEL_PATH, "r") as z:
+                z.testzip()
+            return MODEL_PATH
+        except Exception:
+            pass
     from huggingface_hub import hf_hub_download
     space_id = os.environ.get("SPACE_ID", "liviuorehovschi/histomancer-api")
     token = os.environ.get("HF_TOKEN")
@@ -29,6 +35,7 @@ def ensure_model_file() -> Path:
     downloaded_path = hf_hub_download(
         repo_id=space_id,
         filename="model/model.keras",
+        repo_type="space",
         local_dir=str(_REPO_ROOT),
         local_dir_use_symlinks=False,
         token=token,
@@ -37,6 +44,11 @@ def ensure_model_file() -> Path:
     downloaded = Path(downloaded_path)
     if downloaded.stat().st_size < 1024 * 1024:
         raise RuntimeError(f"Downloaded file is only {downloaded.stat().st_size} bytes (expected >1MB). Xet pointer not resolved.")
+    try:
+        with zipfile.ZipFile(downloaded, "r") as z:
+            z.testzip()
+    except Exception as e:
+        raise RuntimeError(f"Downloaded file is not a valid zip/.keras file: {e}")
     if downloaded.resolve() != MODEL_PATH.resolve():
         import shutil
         shutil.copy2(downloaded, MODEL_PATH)
@@ -93,6 +105,13 @@ def get_model_diagnostics() -> dict:
     }
     if p.exists():
         out["model_path_size"] = p.stat().st_size
+        try:
+            with zipfile.ZipFile(p, "r") as z:
+                out["is_valid_zip"] = True
+                out["zip_entries"] = len(z.namelist())
+        except Exception as e:
+            out["is_valid_zip"] = False
+            out["zip_error"] = str(e)
     if MODEL_DIR.exists():
         out["model_dir_listing"] = [x.name for x in MODEL_DIR.iterdir()]
     else:
