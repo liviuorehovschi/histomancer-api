@@ -18,20 +18,25 @@ _class_names: list[str] = ["adenocarcinoma", "squamous_cell_carcinoma", "normal"
 
 
 def ensure_model_file() -> Path:
-    if MODEL_PATH.exists() and MODEL_PATH.stat().st_size > 1024:
+    if MODEL_PATH.exists() and MODEL_PATH.stat().st_size > 1024 * 1024:
         return MODEL_PATH
     from huggingface_hub import hf_hub_download
     space_id = os.environ.get("SPACE_ID", "liviuorehovschi/histomancer-api")
     token = os.environ.get("HF_TOKEN")
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    if MODEL_PATH.exists():
+        MODEL_PATH.unlink()
     downloaded_path = hf_hub_download(
         repo_id=space_id,
         filename="model/model.keras",
         local_dir=str(_REPO_ROOT),
         local_dir_use_symlinks=False,
         token=token,
+        force_download=True,
     )
     downloaded = Path(downloaded_path)
+    if downloaded.stat().st_size < 1024 * 1024:
+        raise RuntimeError(f"Downloaded file is only {downloaded.stat().st_size} bytes (expected >1MB). Xet pointer not resolved.")
     if downloaded.resolve() != MODEL_PATH.resolve():
         import shutil
         shutil.copy2(downloaded, MODEL_PATH)
