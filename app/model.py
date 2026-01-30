@@ -121,6 +121,26 @@ def get_class_names() -> list[str]:
     return _class_names
 
 
+def get_model_diagnostics() -> dict:
+    """Return path, exists, size, is_lfs, and model dir listing for debugging."""
+    p = MODEL_PATH
+    out = {
+        "model_path": str(p),
+        "model_path_exists": p.exists(),
+        "model_dir": str(MODEL_DIR),
+        "model_dir_exists": MODEL_DIR.exists(),
+        "repo_root": str(_REPO_ROOT),
+    }
+    if p.exists():
+        out["model_path_size"] = p.stat().st_size
+        out["model_path_is_lfs_pointer"] = _is_lfs_pointer(p)
+    if MODEL_DIR.exists():
+        out["model_dir_listing"] = [str(x.name) for x in MODEL_DIR.iterdir()]
+    else:
+        out["model_dir_listing"] = []
+    return out
+
+
 def preprocess_image(image: Image.Image) -> np.ndarray:
     shape = get_input_shape()
     if image.mode != "RGB":

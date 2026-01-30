@@ -7,29 +7,39 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 from PIL import Image
 
-from app.model import load_model, get_class_names, preprocess_image, predict
+from app.model import load_model, get_class_names, get_model_diagnostics, preprocess_image, predict
 from app.explainability import gradcam_image, saliency_map, encode_png
 from app.schemas import HealthResponse, PredictResponse, ExplainResponse
 
 app = FastAPI(title="Histomancer API", version="1.0.0")
 _model_loaded = False
+_model_load_error: str | None = None
 
 
 @app.on_event("startup")
 def startup():
-    global _model_loaded
+    global _model_loaded, _model_load_error
     try:
         load_model()
         _model_loaded = True
+        _model_load_error = None
         logger.info("Model loaded successfully")
     except Exception as e:
         _model_loaded = False
+        _model_load_error = f"{type(e).__name__}: {e}"
         logger.exception("Model failed to load: %s", e)
 
 
 @app.get("/health", response_model=HealthResponse)
 def health():
-    return HealthResponse(status="ok", model_loaded=_model_loaded)
+    if _model_loaded:
+        return HealthResponse(status="ok", model_loaded=True)
+    return HealthResponse(
+        status="ok",
+        model_loaded=False,
+        model_error=_model_load_error,
+        model_diagnostics=get_model_diagnostics(),
+    )
 
 
 async def _load_image(file: UploadFile) -> Image.Image:
