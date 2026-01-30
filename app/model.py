@@ -74,6 +74,17 @@ def _find_model_path() -> str:
     return str(MODEL_PATH)
 
 
+class _InputLayerCompat(tf.keras.layers.InputLayer):
+    """Accepts config with 'batch_shape' (TF 2.15+) when loading on older TF."""
+
+    @classmethod
+    def from_config(cls, config):
+        config = dict(config)
+        if "batch_shape" in config:
+            config["batch_input_shape"] = config.pop("batch_shape")
+        return super().from_config(config)
+
+
 def load_model() -> tf.keras.Model:
     global _model_instance, _input_shape
     if _model_instance is not None:
@@ -87,11 +98,15 @@ def load_model() -> tf.keras.Model:
             f"Model at {path} is a Git LFS pointer, not the actual file. "
             "Upload the real model.keras to the Space repo (Files tab) or ensure LFS is resolved."
         )
-    # compile=False + safe_mode=False (TF 2.16+) to avoid "layer expects 1 input but received 2"
+    custom_objects = {"InputLayer": _InputLayerCompat}
     try:
-        _model_instance = tf.keras.models.load_model(path, compile=False, safe_mode=False)
+        _model_instance = tf.keras.models.load_model(
+            path, compile=False, safe_mode=False, custom_objects=custom_objects
+        )
     except TypeError:
-        _model_instance = tf.keras.models.load_model(path, compile=False)
+        _model_instance = tf.keras.models.load_model(
+            path, compile=False, custom_objects=custom_objects
+        )
     try:
         layer = _model_instance.input
         if hasattr(layer, "shape") and layer.shape is not None:
