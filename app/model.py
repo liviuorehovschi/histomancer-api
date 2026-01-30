@@ -88,12 +88,20 @@ def _rewrite_keras_config_for_old_tf(path: str) -> str:
             with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
                 for name in zin.namelist():
                     data = zin.read(name)
-                    if name.endswith(".json") and b"batch_shape" in data:
+                    if name.endswith(".json") and (b"batch_shape" in data or b"DTypePolicy" in data):
                         config = json.loads(data.decode("utf-8"))
                         def fix(d):
                             if isinstance(d, dict):
                                 if "batch_shape" in d:
                                     d["batch_input_shape"] = d.pop("batch_shape")
+                                # Keras 3 dtype: {class_name: DTypePolicy, config: {name: float32}} -> "float32"
+                                if "dtype" in d and isinstance(d["dtype"], dict):
+                                    dtype_cfg = d["dtype"]
+                                    if dtype_cfg.get("class_name") == "DTypePolicy":
+                                        inner = dtype_cfg.get("config") or {}
+                                        d["dtype"] = inner.get("name", "float32")
+                                    elif "config" in dtype_cfg and isinstance(dtype_cfg["config"], dict):
+                                        d["dtype"] = dtype_cfg["config"].get("name", "float32")
                                 for v in d.values():
                                     fix(v)
                             elif isinstance(d, list):
