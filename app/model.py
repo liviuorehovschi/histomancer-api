@@ -24,10 +24,29 @@ _class_names: list[str] = ["adenocarcinoma", "squamous_cell_carcinoma", "normal"
 def _fix_dense_18_inbound(config: dict) -> None:
     """Force dense_18 to have exactly one inbound connection (fix TF load bug)."""
     if isinstance(config, dict):
+        # Graph topology: config.config.nodes[i] is the node for layers[i]
+        # dense_18 is at layers[4], so nodes[4] is its node (list of inbound connections)
+        if "config" in config and isinstance(config["config"], dict):
+            cfg = config["config"]
+            if "layers" in cfg and "nodes" in cfg:
+                layers = cfg["layers"]
+                nodes = cfg["nodes"]
+                if isinstance(layers, list) and isinstance(nodes, list):
+                    # Find dense_18's layer index
+                    for layer_idx, layer in enumerate(layers):
+                        if isinstance(layer, dict) and layer.get("name") == "dense_18":
+                            # nodes[layer_idx] is dense_18's node (list of inbound connections)
+                            if layer_idx < len(nodes):
+                                node = nodes[layer_idx]
+                                if isinstance(node, list) and len(node) > 1:
+                                    # Keep only first inbound connection
+                                    nodes[layer_idx] = [node[0]]
+                                    logger.info("Patched dense_18 node[%d] to single inbound connection", layer_idx)
+                            break
+        # Also check layer-level inbound_nodes (older format)
         if config.get("name") == "dense_18" and "inbound_nodes" in config:
             nodes = config["inbound_nodes"]
             if isinstance(nodes, list) and nodes:
-                # Each node is a list of [layer_name, node_idx, tensor_idx, kwargs]; keep first only
                 if isinstance(nodes[0], list) and len(nodes[0]) > 1:
                     config["inbound_nodes"] = [nodes[0][:1]] if nodes[0] else []
                     logger.info("Patched dense_18 inbound_nodes to single input")
@@ -203,6 +222,16 @@ def _dump_keras_config_for_dense_18(path: Path) -> dict | None:
                                 out["dense_18_layer_keys"] = list(layer.keys())
                                 out["dense_18_inbound_nodes_raw"] = layer.get("inbound_nodes")
                                 break
+                    # Graph topology is in nodes - find dense_18's node
+                    if "nodes" in cfg and isinstance(cfg["nodes"], list):
+                        for i, node in enumerate(cfg["nodes"]):
+                            if isinstance(node, list) and len(node) > 0:
+                                # node is [[layer_name, node_idx, tensor_idx, kwargs], ...]
+                                for conn in node:
+                                    if isinstance(conn, list) and len(conn) > 0 and conn[0] == "dense_18":
+                                        out["dense_18_node_index"] = i
+                                        out["dense_18_node_raw"] = node
+                                        break
                 return out
     except Exception as e:
         return {"error": str(e)}
