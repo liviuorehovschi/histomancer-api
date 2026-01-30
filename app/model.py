@@ -87,7 +87,7 @@ def load_model() -> tf.keras.Model:
             f"Model at {path} is a Git LFS pointer, not the actual file. "
             "Upload the real model.keras to the Space repo (Files tab) or ensure LFS is resolved."
         )
-    _model_instance = tf.keras.models.load_model(path)
+    _model_instance = tf.keras.models.load_model(path, compile=False)
     try:
         layer = _model_instance.input
         if hasattr(layer, "shape") and layer.shape is not None:
